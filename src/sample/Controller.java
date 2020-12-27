@@ -24,7 +24,6 @@ public class Controller {
 
         System.out.println(path);
 
-        // TODO:
        result.setText("Datei wurde in " + path + " gespeichert");
 
         try {
