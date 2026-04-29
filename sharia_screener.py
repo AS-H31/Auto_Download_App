@@ -484,15 +484,122 @@ def calculate_purification(data: dict) -> float:
     return purification
 
 
+# ── Company identification ────────────────────────────────────────────────────
+
+def _is_direct_ticker(user_input: str) -> tuple[bool, str, str]:
+    """
+    Attempt to resolve user_input as a bare ticker symbol.
+    Returns (success, ticker_symbol, company_name).
+    A hit requires info to contain a longName so we don't accept empty stubs.
+    """
+    try:
+        t    = yf.Ticker(user_input)
+        info = t.info
+        name = info.get("longName") or info.get("shortName", "")
+        if name:
+            return True, user_input.upper(), name
+    except Exception:
+        pass
+    return False, "", ""
+
+
+def resolve_ticker() -> str:
+    """
+    Prompt for a company name or ticker, resolve via yf.Search when needed,
+    show a numbered pick-list for ambiguous inputs, and confirm the selection.
+    Returns the resolved ticker symbol string.
+    """
+    while True:
+        user_input = input("  Enter company name or ticker symbol: ").strip()
+        if not user_input:
+            print("  Please enter something.")
+            continue
+
+        # ── Fast path: input looks like a ticker and resolves directly ────────
+        print(f"  Checking '{user_input}'…", end="", flush=True)
+        hit, symbol, company_name = _is_direct_ticker(user_input)
+        if hit:
+            print(" found.")
+            exchange = ""
+            try:
+                exchange = yf.Ticker(user_input).info.get("exchange", "")
+            except Exception:
+                pass
+            exch_str = f" — {exchange}" if exchange else ""
+            confirm = input(
+                f"  Selected: {company_name} ({symbol}){exch_str}. Proceed? (y/n): "
+            ).strip().lower()
+            if confirm == "y":
+                return symbol
+            # User said no — fall through to search
+            print()
+
+        # ── Search path: run yf.Search and show up to 5 matches ──────────────
+        print(f"\r  Searching for '{user_input}'…", end="", flush=True)
+        try:
+            search  = _fetch_with_retry(lambda: yf.Search(user_input))
+            quotes  = search.quotes or []
+        except Exception as exc:
+            print(f" failed ({exc}).")
+            quotes = []
+
+        # Filter to entries that have a symbol
+        quotes = [q for q in quotes if q.get("symbol")][:5]
+
+        if not quotes:
+            print(f"\r  No results found for '{user_input}'. Please try again.\n")
+            continue
+
+        print("\r" + " " * 50 + "\r", end="")   # clear the progress line
+
+        print()
+        print("  Search results:")
+        print("  " + "─" * 58)
+        for i, q in enumerate(quotes, start=1):
+            sym      = q.get("symbol", "")
+            name     = q.get("longname") or q.get("shortname") or ""
+            exchange = q.get("exchDisp") or q.get("exchange") or ""
+            print(f"  [{i}] {sym:<10} {name:<35} {exchange}")
+        print("  " + "─" * 58)
+
+        raw = input(
+            f"  Select [1-{len(quotes)}] or press Enter for top result: "
+        ).strip()
+
+        if raw == "":
+            chosen = quotes[0]
+        else:
+            try:
+                idx = int(raw) - 1
+                if not (0 <= idx < len(quotes)):
+                    raise ValueError
+                chosen = quotes[idx]
+            except ValueError:
+                print("  Invalid selection — defaulting to top result.")
+                chosen = quotes[0]
+
+        symbol   = chosen.get("symbol", "").upper()
+        name     = chosen.get("longname") or chosen.get("shortname") or symbol
+        exchange = chosen.get("exchDisp") or chosen.get("exchange") or ""
+        exch_str = f" — {exchange}" if exchange else ""
+
+        confirm = input(
+            f"\n  Selected: {name} ({symbol}){exch_str}. Proceed? (y/n): "
+        ).strip().lower()
+
+        if confirm == "y":
+            return symbol
+
+        print()  # user said no — loop back to the top
+
+
 # ── Entry point ───────────────────────────────────────────────────────────────
 
 def main():
     banner()
 
-    ticker_symbol = input("  Enter ticker symbol (e.g. PLD, DLR, AAPL): ").strip().upper()
-    if not ticker_symbol:
-        print("  [error] No ticker entered. Exiting.")
-        sys.exit(1)
+    ticker_symbol = resolve_ticker()
+    print()
 
     # Step 1: fetch
     data = fetch_data(ticker_symbol)
